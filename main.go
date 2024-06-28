@@ -12,10 +12,36 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/leighmacdonald/steamid/v4/steamid"
 	"github.com/leighmacdonald/steamweb/v2"
 	"github.com/spf13/cobra"
+)
+
+var (
+	apiKey           string
+	inputFile        string
+	outputFile       string
+	inPlace          bool
+	statsMode        bool
+	includeCommunity bool
+
+	rootCmd = &cobra.Command{
+		Use:   "tf2bd_cleaner",
+		Short: "Remove banned and deleted users from TF2 bot detector player lists",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if apiKey == "" {
+				return errors.New("must set api key")
+			}
+
+			if err := steamweb.SetKey(apiKey); err != nil {
+				return errors.Join(err, errors.New("could not set api key"))
+			}
+
+			return run()
+		},
+	}
 )
 
 type FileInfo struct {
@@ -43,28 +69,18 @@ type TF2BDSchema struct {
 	Players  []Players `json:"players"`
 }
 
-var (
-	apiKey     string
-	inputFile  string
-	outputFile string
-	inPlace    bool
+type findResults struct {
+	total           steamid.Collection
+	vacBanned       steamid.Collection
+	gameBanned      steamid.Collection
+	deleted         steamid.Collection
+	communityBanned steamid.Collection
+	reasons         map[string]int
+}
 
-	rootCmd = &cobra.Command{
-		Use:   "tf2bd_cleaner",
-		Short: "Remove banned and deleted users from TF2 bot detector player lists",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			if apiKey == "" {
-				return errors.New("must set api key")
-			}
-
-			if err := steamweb.SetKey(apiKey); err != nil {
-				return errors.Join(err, errors.New("could not set api key"))
-			}
-
-			return run()
-		},
-	}
-)
+func (r findResults) valid() int {
+	return len(r.total) - (len(r.vacBanned) + len(r.gameBanned) + len(r.deleted) + len(r.communityBanned))
+}
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
@@ -118,14 +134,32 @@ func run() error {
 	}
 
 	slog.Info("Running profile checks...")
-	banned, deleted, errBanned := findBanned(ctx, knownIDs)
+	results, errBanned := findBanned(ctx, knownIDs)
 	if errBanned != nil {
 		return errBanned
 	}
 
+	for _, player := range list.Players {
+		for _, attr := range player.Attributes {
+			lAttr := strings.ToLower(attr)
+
+			_, found := results.reasons[lAttr]
+			if !found {
+				results.reasons[lAttr] = 0
+			}
+
+			results.reasons[lAttr]++
+		}
+	}
+
 	var toRemove steamid.Collection
-	toRemove = append(toRemove, banned...)
-	toRemove = append(toRemove, deleted...)
+	toRemove = append(toRemove, results.vacBanned...)
+	toRemove = append(toRemove, results.gameBanned...)
+	toRemove = append(toRemove, results.deleted...)
+
+	if includeCommunity {
+		toRemove = append(toRemove, results.communityBanned...)
+	}
 
 	var players []Players
 
@@ -137,15 +171,27 @@ func run() error {
 
 	list.Players = players
 
-	if errWrite := writeList(list); errWrite != nil {
-		return errors.Join(errWrite, errors.New("failed to write output"))
+	if !statsMode {
+		if errWrite := writeList(list); errWrite != nil {
+			return errors.Join(errWrite, errors.New("failed to write output"))
+		}
 	}
 
-	slog.Info("Stats",
+	slog.Info("Profile stats",
 		slog.Int("total", len(knownIDs)),
-		slog.Int("banned", len(banned)),
-		slog.Int("deleted", len(deleted)),
-		slog.Int("kept", len(knownIDs)-(len(banned)+len(deleted))))
+		slog.Int("game_bans", len(results.gameBanned)),
+		slog.Int("vac_bans", len(results.vacBanned)),
+		slog.Int("community_bans", len(results.communityBanned)),
+		slog.Int("deleted", len(results.deleted)),
+		slog.Int("valid", results.valid()),
+	)
+
+	var attrs []any //nolint:prealloc
+	for attr := range results.reasons {
+		attrs = append(attrs, slog.Int(attr, results.reasons[attr]))
+	}
+
+	slog.Info("Tag stats", attrs...)
 
 	return nil
 }
@@ -211,11 +257,10 @@ func findDeleted(ctx context.Context, ids steamid.Collection) (steamid.Collectio
 	return deleted, nil
 }
 
-func findBanned(ctx context.Context, knownIDs steamid.Collection) (steamid.Collection, steamid.Collection, error) {
+func findBanned(ctx context.Context, knownIDs steamid.Collection) (findResults, error) {
 	var (
 		currentSet steamid.Collection
-		banned     steamid.Collection
-		deleted    steamid.Collection
+		results    = findResults{total: knownIDs, reasons: make(map[string]int)}
 	)
 
 	for i := range len(knownIDs) {
@@ -224,15 +269,15 @@ func findBanned(ctx context.Context, knownIDs steamid.Collection) (steamid.Colle
 			// Deleted accounts
 			deletedIDs, errDeleted := findDeleted(ctx, currentSet)
 			if errDeleted != nil {
-				return nil, nil, errDeleted
+				return results, errDeleted
 			}
 
-			deleted = append(deleted, deletedIDs...)
+			results.deleted = append(results.deleted, deletedIDs...)
 
 			// Accounts with game/vacs
 			bans, errBans := steamweb.GetPlayerBans(ctx, currentSet)
 			if errBans != nil {
-				return nil, nil, errors.Join(errBans, errors.New("failed to query steam api"))
+				return results, errors.Join(errBans, errors.New("failed to query steam api"))
 			}
 
 			for _, checked := range currentSet {
@@ -245,13 +290,18 @@ func findBanned(ctx context.Context, knownIDs steamid.Collection) (steamid.Colle
 					}
 				}
 				if wasDeleted {
-					deleted = append(deleted, checked)
+					results.deleted = append(results.deleted, checked)
 				}
 			}
 
 			for _, ban := range bans {
-				if ban.VACBanned || ban.NumberOfGameBans > 0 {
-					banned = append(banned, ban.SteamID)
+				switch {
+				case ban.VACBanned:
+					results.vacBanned = append(results.vacBanned, ban.SteamID)
+				case ban.NumberOfGameBans > 0:
+					results.gameBanned = append(results.gameBanned, ban.SteamID)
+				case ban.CommunityBanned:
+					results.communityBanned = append(results.communityBanned, ban.SteamID)
 				}
 			}
 
@@ -259,12 +309,14 @@ func findBanned(ctx context.Context, knownIDs steamid.Collection) (steamid.Colle
 		}
 	}
 
-	return banned, deleted, nil
+	return results, nil
 }
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&apiKey, "apikey", "k", "", "Steam API Key")
 	rootCmd.PersistentFlags().StringVarP(&inputFile, "input", "i", "", "Input player list path. If not defined, stdin will be used")
 	rootCmd.PersistentFlags().StringVarP(&outputFile, "output", "o", "", "Output player list path. If not defined, stdout will be used")
-	rootCmd.PersistentFlags().BoolVarP(&inPlace, "overwrite", "r", false, "Overwrite the input file.")
+	rootCmd.PersistentFlags().BoolVarP(&inPlace, "overwrite", "r", false, "Overwrite the input file")
+	rootCmd.PersistentFlags().BoolVarP(&statsMode, "stats", "s", false, "Computes stats for entries, does not perform any deletions")
+	rootCmd.PersistentFlags().BoolVarP(&includeCommunity, "community", "c", false, "Include community bans in deletions")
 }
