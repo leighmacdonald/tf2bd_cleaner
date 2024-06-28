@@ -20,3 +20,8 @@
 # Go workspace file
 go.work
 go.work.sum
+
+*.json
+tf2bd_cleaner
+.idea
+dist/
