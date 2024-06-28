@@ -35,3 +35,12 @@ Help overview:
     -i, --input string    Input player list path. If not defined, stdin will be used
     -o, --output string   Output player list path. If not defined, stdout will be used
     -r, --overwrite       Overwrite the input file.
+
+
+Example:
+
+    $ ./tf2bd_cleaner --apikey XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX -i testdata/playerlist.cleffy.json -o playerlist.cleffy-trimmed.json
+    2024/06/27 20:14:52 INFO Running profile checks...
+    2024/06/27 20:14:56 INFO Stats total=909 banned=106 deleted=244 kept=559
+    $
+
