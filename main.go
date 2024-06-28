@@ -68,7 +68,6 @@ var (
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		slog.Error("Error executing", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
