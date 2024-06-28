@@ -2,9 +2,9 @@
 
 Removes VAC, game banned, and deleted profiles from [tf2bd](https://github.com/PazerOP/tf2_bot_detector) lists.
 
-Can also summarize basic stats from the playerlist.
+Can also summarize basic stats from the playerlist without making any changes.
 
-## Usage
+## Examples
 
 Get stats on the list without making any changes:
 ```shell
@@ -39,7 +39,16 @@ Process data using stdin/stdout:
 ./tf2bd_cleaner -k your-api-key < playerlist.cleffy.json > playerlist.out.json
 ``` 
 
-Help overview:
+Full Example:
+
+    $ ./tf2bd_cleaner -k xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx -i testdata/playerlist.cleffy.json -o playerlist.trimmed.json -c 
+    2024/06/27 23:20:37 INFO Running profile checks...
+    2024/06/27 23:20:41 INFO Profile stats total=909 game_bans=12 vac_bans=94 community_bans=131 deleted=247 valid=425
+    2024/06/27 23:20:41 INFO Tag stats suspicious=12 cheater=897
+    $
+
+
+## Usage Help
 
     Remove banned and deleted users from TF2 bot detector player lists
     
@@ -54,11 +63,3 @@ Help overview:
     -o, --output string   Output player list path. If not defined, stdout will be used
     -r, --overwrite       Overwrite the input file
     -s, --stats           Computes stats for entries, does not perform any deletions
-
-Example:
-
-    $ ./tf2bd_cleaner -k XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX -i testdata/playerlist.cleffy.json -o playerlist.cleffy-trimmed.json
-    2024/06/27 20:14:52 INFO Running profile checks...
-    2024/06/27 20:14:56 INFO Stats total=909 banned=106 deleted=244 kept=559
-    $
-
